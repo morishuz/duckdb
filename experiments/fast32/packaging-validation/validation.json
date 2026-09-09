@@ -1,0 +1,38 @@
+{
+  "created_utc": "2026-09-09T16:12:29.231975+00:00",
+  "upstream_base": "bd77495e4b98772224948c57320bc1aa25ad9bfc",
+  "platform": "Apple M1, macOS, Apple Clang 21",
+  "build": "Clean Release C++20; cmake --build build/fast32 --target duckdb shell --parallel 2",
+  "kernel_cases": 865,
+  "kernel_address_undefined_sanitizers_cases": 865,
+  "sql_cases": 69,
+  "sql_modes": [
+    "native (0)",
+    "fast32 (1)",
+    "default (unset)"
+  ],
+  "additional_sql_cases": 64,
+  "memory_matrices": {
+    "budget-validation": {
+      "workers": 20,
+      "query_checks": 168,
+      "all_passed": true
+    },
+    "headroom-validation": {
+      "workers": 8,
+      "query_checks": 96,
+      "all_passed": true
+    }
+  },
+  "format_check": "passed",
+  "full_upstream_suite": "not run",
+  "source_sha256": {
+    "CMakeLists.txt": "222366fea37747ab17f1a025a209581fe5e42234f8ea3179f144897e85a0beb6",
+    "src/common/sort/sort.cpp": "5a2ec51053dca2270fcbf1f95a25c4ac6dbb5e9c64dea6a1bcd818d62a46db35",
+    "src/common/sort/sorted_run.cpp": "e8f8463c1289c2ad68746db0a3ee0a8b599f814563a7769da88492077d1f646e",
+    "src/include/duckdb/common/sorting/sorted_run.hpp": "6fd7264d3327c639c1160a47de2cc1b9de92014bd706307fc3dcf5ce6eb86051",
+    "src/include/duckdb/common/sorting/fast32_paged_radix.hpp": "286f22d08cd41de30c5ca2c2a362eff274206c0b57d16bf9fa26df53dd66d975"
+  },
+  "library_sha256": "d968714e60574079dadd51a9e508dd7ad388e7c225f12ec579584384b2070afd",
+  "benchmark_smoke": "12 fresh workers, 3 timed queries each; same binary, native vs fast32, randomized order; warmup and separate profiling; all checksums matched; not a replacement for broad historical matrix"
+}

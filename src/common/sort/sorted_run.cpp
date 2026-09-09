@@ -12,6 +12,14 @@
 
 #include "vergesort.h"
 #include "ska_sort.hpp"
+#include "duckdb/common/sorting/fast32_paged_radix.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
+#include <chrono>
+#include <cinttypes>
+#include <cstring>
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
 
 namespace duckdb {
 
@@ -228,8 +236,38 @@ struct SkaExtractKey {
 	atomic<ClientInterruptState> &interrupt_state;
 };
 
+// Include the managed buffer's allocation rounding and bounded kernel metadata.
+static idx_t Fast32ScratchBytes(idx_t n, idx_t record_width) {
+	return BufferManager::GetAllocSize(n * record_width + Storage::DEFAULT_BLOCK_HEADER_SIZE) + 256 * 1024;
+}
+
+// Pages remain pinned for the entire local sort.
+template <class SORT_KEY>
+class Fast32Pages {
+public:
+	Fast32Pages(const InMemoryBlockIteratorState &state_p, idx_t count_p) : state(state_p), count(count_p) {
+	}
+
+	SORT_KEY &operator[](idx_t index) const {
+		return state.GetValueAtIndex<SORT_KEY>(index);
+	}
+
+	std::span<SORT_KEY> contiguous(idx_t index) const {
+		idx_t block_idx;
+		idx_t tuple_idx;
+		state.RandomAccess(block_idx, tuple_idx, index);
+		const auto length = MinValue(state.GetDivisor() - tuple_idx, count - index);
+		return {&state.GetValueAtIndex<SORT_KEY>(block_idx, tuple_idx), length};
+	}
+
+private:
+	const InMemoryBlockIteratorState &state;
+	const idx_t count;
+};
+
 template <SortKeyType SORT_KEY_TYPE>
-static void TemplatedSort(ClientContext &context, TupleDataCollection &key_data, const bool is_index_sort) {
+static void TemplatedSort(ClientContext &context, TupleDataCollection &key_data, const bool is_index_sort,
+                          const idx_t fast32_scratch_budget) {
 	const auto &layout = key_data.GetLayout();
 	D_ASSERT(SORT_KEY_TYPE == layout.GetSortKeyType());
 	using SORT_KEY = SortKey<SORT_KEY_TYPE>;
@@ -239,6 +277,53 @@ static void TemplatedSort(ClientContext &context, TupleDataCollection &key_data,
 	const BLOCK_ITERATOR_STATE state(key_data);
 	auto begin = BLOCK_ITERATOR(state, 0);
 	auto end = BLOCK_ITERATOR(state, key_data.Count());
+
+	if constexpr (SORT_KEY_TYPE == SortKeyType::NO_PAYLOAD_FIXED_8 || SORT_KEY_TYPE == SortKeyType::PAYLOAD_FIXED_16) {
+		if (!is_index_sort && fast32_scratch_budget > 0 && key_data.Count() >= 4096 && key_data.Count() <= UINT32_MAX) {
+			const auto n = key_data.Count();
+			auto &manager = BufferManager::GetBufferManager(context);
+			const auto bytes = Fast32ScratchBytes(n, sizeof(SORT_KEY));
+			D_ASSERT(bytes <= fast32_scratch_budget);
+			if (bytes > fast32_scratch_budget) {
+				throw InternalException("fast32 scratch exceeds admitted budget");
+			}
+			static_assert(alignof(SORT_KEY) <= alignof(uint64_t));
+			static_assert(std::is_trivially_default_constructible_v<SORT_KEY>);
+			static_assert(std::is_trivially_destructible_v<SORT_KEY>);
+			const auto start = std::chrono::steady_clock::now();
+			BufferHandle scratch_handle;
+			try {
+				scratch_handle = manager.Allocate(QueryContext(context), MemoryTag::ORDER_BY, n * sizeof(SORT_KEY));
+			} catch (const OutOfMemoryException &) {
+				// No input has changed yet, so native sorting remains safe.
+				if (std::getenv("FAST32_DUCKDB_TRACE")) {
+					std::fprintf(stderr, "FAST32_RESERVATION_FALLBACK rows=%" PRIu64 " bytes=%" PRIu64 "\n",
+					             static_cast<uint64_t>(n), static_cast<uint64_t>(bytes));
+				}
+			}
+			if (scratch_handle.IsValid()) {
+				auto records = reinterpret_cast<SORT_KEY *>(scratch_handle.GetDataMutable());
+				std::uninitialized_default_construct_n(records, n);
+				const auto allocated = std::chrono::steady_clock::now();
+				Fast32Pages<SORT_KEY> pages(state, n);
+				const auto result = fast32::experimental::paged_radix_sort<SORT_KEY>(
+				    pages, n, std::span<SORT_KEY>(records, n), [](const SORT_KEY &key) { return key.part0; },
+				    [&context]() { context.InterruptCheck(); });
+				if (std::getenv("FAST32_DUCKDB_TRACE")) {
+					const auto finish = std::chrono::steady_clock::now();
+					using Milliseconds = std::chrono::duration<double, std::milli>;
+					std::fprintf(stderr,
+					             "FAST32_PAGED rows=%" PRIu64 " width=%" PRIu64
+					             " alloc_ms=%.6f kernel_ms=%.6f passes=%u copy_back=%u shortcut=%u\n",
+					             static_cast<uint64_t>(n), static_cast<uint64_t>(sizeof(SORT_KEY)),
+					             Milliseconds(allocated - start).count(), Milliseconds(finish - allocated).count(),
+					             result.radix_passes, static_cast<unsigned>(result.copied_back),
+					             static_cast<unsigned>(result.shortcut));
+				}
+				return;
+			}
+		}
+	}
 
 	const auto requires_next_sort =
 	    is_index_sort ? false : !SORT_KEY::CONSTANT_SIZE || SORT_KEY::INLINE_LENGTH != sizeof(uint64_t);
@@ -250,17 +335,25 @@ static void TemplatedSort(ClientContext &context, TupleDataCollection &key_data,
 	const auto fallback = [ska_extract_key](const BLOCK_ITERATOR &fb_begin, const BLOCK_ITERATOR &fb_end) {
 		duckdb_ska_sort::ska_sort(fb_begin, fb_end, ska_extract_key);
 	};
+	const auto stock_start = std::chrono::steady_clock::now();
 	duckdb_vergesort::vergesort(begin, end, std::less<SORT_KEY>(), fallback);
+	if (std::getenv("FAST32_DUCKDB_TRACE")) {
+		const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stock_start);
+		std::fprintf(stderr, "STOCK rows=%" PRIu64 " width=%" PRIu64 " type=%u sort_ms=%.6f\n",
+		             static_cast<uint64_t>(key_data.Count()), static_cast<uint64_t>(sizeof(SORT_KEY)),
+		             static_cast<unsigned>(SORT_KEY_TYPE), elapsed.count());
+	}
 
 	context.InterruptCheck();
 }
 
-static void SortSwitch(ClientContext &context, TupleDataCollection &key_data, bool is_index_sort) {
+static void SortSwitch(ClientContext &context, TupleDataCollection &key_data, bool is_index_sort,
+                       idx_t fast32_scratch_budget) {
 	const auto sort_key_type = key_data.GetLayout().GetSortKeyType();
 	switch (sort_key_type) {
 #define DUCKDB_SORT_KEY_CASE(SORT_KEY_TYPE)                                                                            \
 	case SortKeyType::SORT_KEY_TYPE:                                                                                   \
-		return TemplatedSort<SortKeyType::SORT_KEY_TYPE>(context, key_data, is_index_sort);
+		return TemplatedSort<SortKeyType::SORT_KEY_TYPE>(context, key_data, is_index_sort, fast32_scratch_budget);
 		DUCKDB_FOR_EACH_SORT_KEY_TYPE(DUCKDB_SORT_KEY_CASE)
 #undef DUCKDB_SORT_KEY_CASE
 	default:
@@ -393,7 +486,7 @@ static void Reorder(ClientContext &context, unique_ptr<TupleDataCollection> &key
 	}
 }
 
-void SortedRun::Finalize(bool external) {
+void SortedRun::Finalize(bool external, idx_t fast32_scratch_budget) {
 	D_ASSERT(!finalized);
 
 	// Finalize the append
@@ -406,7 +499,7 @@ void SortedRun::Finalize(bool external) {
 	}
 
 	// Sort the fixed-size portion of the keys
-	SortSwitch(context, *key_data, is_index_sort);
+	SortSwitch(context, *key_data, is_index_sort, external ? 0 : fast32_scratch_budget);
 
 	if (external) {
 		// Reorder variable-size portion of keys and/or payload data (if necessary)
@@ -437,6 +530,19 @@ void SortedRun::DestroyData(const idx_t tuple_idx_begin, const idx_t tuple_idx_e
 
 idx_t SortedRun::Count() const {
 	return key_data->Count();
+}
+
+idx_t SortedRun::Fast32ScratchSize() const {
+	const auto n = Count();
+	if (is_index_sort || n < 4096 || n > UINT32_MAX) {
+		return 0;
+	}
+	const auto &layout = key_data->GetLayout();
+	const auto type = layout.GetSortKeyType();
+	if (type != SortKeyType::NO_PAYLOAD_FIXED_8 && type != SortKeyType::PAYLOAD_FIXED_16) {
+		return 0;
+	}
+	return Fast32ScratchBytes(n, layout.GetRowWidth());
 }
 
 idx_t SortedRun::SizeInBytes() const {

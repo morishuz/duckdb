@@ -51,13 +51,15 @@ public:
 	//! Appends data to key/data collections
 	void Sink(DataChunk &key, DataChunk &payload);
 	//! Sorts the data (physically reorder data if external)
-	void Finalize(bool external);
+	void Finalize(bool external, idx_t fast32_scratch_budget = 0);
 	//! Destroy data between these tuple indices
 	void DestroyData(idx_t tuple_idx_begin, idx_t tuple_idx_end);
 	//! Number of tuples
 	idx_t Count() const;
 	//! Size of this sorted run
 	idx_t SizeInBytes() const;
+	//! Worst-case fast32 scratch for this run, excluding the existing paged records
+	idx_t Fast32ScratchSize() const;
 
 private:
 	mutex merger_global_state_lock;

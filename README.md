@@ -1,3 +1,18 @@
+# DuckDB with experimental fast32 sorting
+
+This independent fork enables our adaptive integer sorting kernel for eligible
+in-memory ORDER BY runs. It is based on DuckDB commit
+`bd77495e4b98772224948c57320bc1aa25ad9bfc`, the revision used in our experiments.
+It is **not an official DuckDB release**. Implementation and testing were developed
+with AI assistance; no upstream endorsement is implied.
+
+**[Build, run, compare, and understand the limitations](experiments/fast32/README.md)**
+
+The fast32 path is enabled by default. Set `FAST32_DUCKDB=0` before starting the
+process to use native sorting. This fork requires a C++20 compiler.
+
+---
+
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="logo/DuckDB_Logo-horizontal.svg">

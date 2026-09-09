@@ -13,6 +13,11 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/storage/temporary_memory_manager.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
+#include <cinttypes>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace duckdb {
 
@@ -160,14 +165,61 @@ public:
 
 class SortGlobalSinkState : public GlobalSinkState {
 public:
-	explicit SortGlobalSinkState(ClientContext &context)
+	SortGlobalSinkState(ClientContext &context, const Sort &sort)
 	    : num_threads(TaskScheduler::GetScheduler(context).NumberOfThreads()),
 	      temporary_memory_state(TemporaryMemoryManager::Get(context).Register(context)), sorted_tuples(0),
-	      external(Settings::Get<DebugForceExternalSetting>(context)), any_combined(false), total_count(0),
-	      partition_size(0) {
+	      external(Settings::Get<DebugForceExternalSetting>(context)), fast32_enabled(Fast32Enabled(sort) && !external),
+	      fast32_padding(4 * BufferManager::GetBufferManager(context).GetBlockAllocSize()), any_combined(false),
+	      total_count(0), partition_size(0) {
 	}
 
 public:
+	static bool Fast32Enabled(const Sort &sort) {
+		const auto mode = std::getenv("FAST32_DUCKDB");
+		const auto type = sort.key_layout->GetSortKeyType();
+		// Enabled by default in this fork; explicit 0 selects native sorting.
+		return (!mode || std::strcmp(mode, "0") != 0) && !sort.is_index_sort && sort.payload_layout->AllConstant() &&
+		       (type == SortKeyType::NO_PAYLOAD_FIXED_8 || type == SortKeyType::PAYLOAD_FIXED_16);
+	}
+
+	idx_t RunMemory(const SortedRun &run) const {
+		const auto scratch = fast32_enabled ? run.Fast32ScratchSize() : 0;
+		return run.SizeInBytes() + (scratch ? scratch + fast32_padding : 0);
+	}
+
+	idx_t AdmitFast32(const SortedRun &run) const {
+		if (!fast32_enabled || external) {
+			return 0;
+		}
+		const auto scratch = run.Fast32ScratchSize();
+		const auto share = temporary_memory_state->GetReservation() / num_threads;
+		const auto needed = run.SizeInBytes() + scratch + fast32_padding;
+		if (scratch && needed <= share) {
+			if (std::getenv("FAST32_DUCKDB_TRACE")) {
+				std::fprintf(stderr, "FAST32_BUDGET admitted=%" PRIu64 " share=%" PRIu64 " scratch=%" PRIu64 "\n",
+				             static_cast<uint64_t>(needed), static_cast<uint64_t>(share),
+				             static_cast<uint64_t>(scratch));
+			}
+			return scratch;
+		}
+		return 0;
+	}
+
+	void FallBackToNative(ClientContext &context, const SortLocalSinkState &lstate) {
+		// Called under lock before any worker can start finalizing a run.
+		D_ASSERT(!any_combined && !external);
+		fast32_enabled = false;
+		const auto required = num_threads * lstate.sorted_run->SizeInBytes();
+		const auto request = MaxValue(required, temporary_memory_state->GetReservation());
+		temporary_memory_state->SetRemainingSizeAndUpdateReservation(context, request);
+		external = temporary_memory_state->GetReservation() < required;
+		if (std::getenv("FAST32_DUCKDB_TRACE")) {
+			std::fprintf(stderr, "FAST32_BUDGET native_fallback required=%" PRIu64 " reservation=%" PRIu64 "\n",
+			             static_cast<uint64_t>(required),
+			             static_cast<uint64_t>(temporary_memory_state->GetReservation()));
+		}
+	}
+
 	void UpdateLocalState(SortLocalSinkState &lstate) const {
 		lstate.maximum_run_size = temporary_memory_state->GetReservation() / num_threads;
 		lstate.external = external;
@@ -180,13 +232,17 @@ public:
 		// If we already got less than we requested last time, have to go external
 		if (temporary_memory_state->GetReservation() < temporary_memory_state->GetRemainingSize()) {
 			if (!any_combined) {
-				external = true;
+				if (fast32_enabled) {
+					FallBackToNative(context, lstate);
+				} else {
+					external = true;
+				}
 			}
 			return;
 		}
 
 		// Double until it fits
-		auto required = num_threads * lstate.sorted_run->SizeInBytes();
+		auto required = num_threads * RunMemory(*lstate.sorted_run);
 		if (is_index_sort) {
 			required *= 4; // Index creation is pretty intense, so we are very conservative here
 		}
@@ -201,7 +257,11 @@ public:
 		// If we got less than we required, we have to go external
 		if (temporary_memory_state->GetReservation() < required) {
 			if (!any_combined) {
-				external = true;
+				if (fast32_enabled) {
+					FallBackToNative(context, lstate);
+				} else {
+					external = true;
+				}
 			}
 		}
 	}
@@ -224,6 +284,10 @@ public:
 
 	//! Whether this is an external sort
 	bool external;
+	//! Scratch is budgeted until a native fallback is chosen before finalization.
+	atomic<bool> fast32_enabled;
+	//! Rounded allocation headroom for fixed key/payload blocks.
+	const idx_t fast32_padding;
 	//! Whether any thread has called Combine yet
 	bool any_combined;
 
@@ -238,13 +302,13 @@ unique_ptr<LocalSinkState> Sort::GetLocalSinkState(ExecutionContext &context) co
 }
 
 unique_ptr<GlobalSinkState> Sort::GetGlobalSinkState(ClientContext &context) const {
-	return make_uniq<SortGlobalSinkState>(context);
+	return make_uniq<SortGlobalSinkState>(context, *this);
 }
 
 //! Returns true if the Sink call is done (either because run size is small or because run was finalized)
 static bool TryFinishSink(SortGlobalSinkState &gstate, SortLocalSinkState &lstate, unique_lock<mutex> &guard) {
 	// Check if we exceed the limit
-	const auto sorted_run_size = lstate.sorted_run->SizeInBytes();
+	const auto sorted_run_size = gstate.RunMemory(*lstate.sorted_run);
 	if (sorted_run_size < lstate.maximum_run_size) {
 		return true; // Sink is done
 	}
@@ -316,11 +380,13 @@ SinkCombineResultType Sort::Combine(ExecutionContext &context, OperatorSinkCombi
 
 	// Set any_combined under lock
 	unique_lock<mutex> guard {gstate.lock};
+	gstate.UpdateLocalState(lstate);
+	const auto scratch_budget = gstate.AdmitFast32(*lstate.sorted_run);
 	gstate.any_combined = true;
 	guard.unlock();
 
 	// Do the final local sort (lock-free)
-	lstate.sorted_run->Finalize(gstate.external);
+	lstate.sorted_run->Finalize(lstate.external, scratch_budget);
 
 	// Append to global state (grabs lock)
 	gstate.AddSortedRun(lstate);

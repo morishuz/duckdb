@@ -1,0 +1,98 @@
+{
+  "created_utc": "2026-09-09T15:13:27.819565+00:00",
+  "duckdb_revision": "bd77495e4b98772224948c57320bc1aa25ad9bfc",
+  "fast32_library_revision": "c35f69d",
+  "previous_adapter_commit": "29c2521",
+  "branch": "codex/duckdb-paged-sort",
+  "selected_iteration": "v3: paged radix with cursors and bounded dominant partition",
+  "hardware": "Apple M1, 16 GiB RAM",
+  "build": "Apple Clang 21, Release C++20, -O3 -DNDEBUG -mcpu=apple-m1",
+  "protocol": "Separate stock/budget/paged libraries; randomized fresh-process trials with warmup, timed sample median and separate profile; macOS USER_INITIATED QoS; no builds or tests concurrent with timing. Spilling3x3; other final matrices5x5. Unisolated desktop; small timing differences remain noisy.",
+  "matrices": {
+    "final-ample-2m": {
+      "trials": 390,
+      "timed_queries": 1950,
+      "all_succeeded": true,
+      "samples_per_trial": 5,
+      "trials_per_implementation_case_threads": 5
+    },
+    "final-ample-8m": {
+      "trials": 30,
+      "timed_queries": 150,
+      "all_succeeded": true,
+      "samples_per_trial": 5,
+      "trials_per_implementation_case_threads": 5
+    },
+    "final-medium-2m": {
+      "trials": 30,
+      "timed_queries": 150,
+      "all_succeeded": true,
+      "samples_per_trial": 5,
+      "trials_per_implementation_case_threads": 5
+    },
+    "final-tight-2m": {
+      "trials": 30,
+      "timed_queries": 150,
+      "all_succeeded": true,
+      "samples_per_trial": 5,
+      "trials_per_implementation_case_threads": 5
+    },
+    "final-spill-8m": {
+      "trials": 18,
+      "timed_queries": 54,
+      "all_succeeded": true,
+      "samples_per_trial": 3,
+      "trials_per_implementation_case_threads": 3
+    }
+  },
+  "reliability": {
+    "final-stress": {
+      "workers": 20,
+      "query_checks": 168,
+      "all_passed": true,
+      "admissions_checked": 0,
+      "late_allocation_fallbacks": 0
+    },
+    "final-shared-headroom": {
+      "workers": 8,
+      "query_checks": 96,
+      "all_passed": true,
+      "admissions_checked": 126,
+      "late_allocation_fallbacks": 0
+    }
+  },
+  "semantic_cases": {
+    "legacy": 64,
+    "paged": 69
+  },
+  "kernel_cases": {
+    "normal": 865,
+    "address_and_undefined_sanitizers": 865
+  },
+  "kernel_test_commands": [
+    "clang++ -std=c++20 -O2 -Wall -Wextra -Werror experiments/duckdb/paged_radix_test.cpp -o /tmp/fast32-paged-radix-test",
+    "/tmp/fast32-paged-radix-test",
+    "clang++ -std=c++20 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Werror experiments/duckdb/paged_radix_test.cpp -o /tmp/fast32-paged-radix-test-asan",
+    "/tmp/fast32-paged-radix-test-asan"
+  ],
+  "historical_files": "pilot-v1, validation-v1, smoke, correctness.json and trace-v1 files use v1. pilot-v2, ample-2m, ample-8m, medium-2m and validation-v2 use v2. pilot-v3 and final-* use v3. Source bundles and binary hashes are preserved for earlier iterations.",
+  "sha256": {
+    "experiments/duckdb/fast32.patch": "644b930226571fd466709da3dce666e3bbefced57db1ef26acde311a0c844158",
+    "experiments/duckdb/budget.patch": "fddfb7f3cf87f37b8e8984abaf115e850c79c824f36a737908d82ca22b920324",
+    "experiments/duckdb/paged_radix.hpp": "576a0d4a171c7b0711ce09f0048aee7432aa9c85f5647564a5fe1aec5450ee15",
+    "experiments/duckdb/paged_radix_test.cpp": "dedecdb9093a990383fd9d40d98b4894bc91194990e4c7b437c6997c7e06d853",
+    "experiments/duckdb/paged_validate.py": "83a7fb466762c8a8b0366b3831bf98e87a275bf2348555380d4a64dfa56d09b6",
+    "experiments/duckdb/run.py": "9b2c9a3dd2548e2a02e20b00707c6316c6849e3a756726c07473fa6880f3fa16",
+    "experiments/duckdb/build.py": "1dadf73dad69111efeeed519fd0d78af616e94aa98efe84c2df45834d98bb7df",
+    "experiments/duckdb/compare.py": "226d7ff165666d4c854027935d4fc6bda53e0c3eb7705f7cf2fdb2594b11e8aa",
+    "experiments/duckdb/budget_test.py": "f7e13b09c724515eefcd8980022f6564df36309f39b2515c3c8c175a20f13c6a",
+    "experiments/duckdb/archive_profiles.py": "b65f126ba8da4ca06f6063be7e1cdc4782c270fccb4db5a860a48e9d628f5b24",
+    "build-duckdb-experiment/src/libduckdb-stock.dylib": "61aad0182e3a498f0dc281fa296bdac79167b636f5d544bf91c95bd44afc7738",
+    "build-duckdb-experiment/src/libduckdb-fast32-budget.dylib": "9e8bb84b32c8659b5bfaacdeafc38f9ed08b914d6a03321cce649203f1f8e64a",
+    "build-duckdb-experiment/src/libduckdb-fast32.dylib": "2d34738a4ced9ad3c2b1c675203f9d398e16d0199a93564af996e53ea239fb9b"
+  },
+  "archives": {
+    "profiles.jsonl.gz": "Full raw JSON profiles, names relative to results/duckdb-paged.",
+    "plans.jsonl.gz": "Full plan text, names relative to results/duckdb-paged. Raw originals are retained locally."
+  }
+}

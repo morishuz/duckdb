@@ -62,15 +62,15 @@ if(CMAKE_EXPORT_COMPILE_COMMANDS AND UNIX)
 endif()
 
 if(DEFINED CMAKE_CXX_STANDARD)
-  set(_duckdb_allowed_cxx_std 17 20 23 26)
+  set(_duckdb_allowed_cxx_std 20 23 26)
   if(NOT CMAKE_CXX_STANDARD IN_LIST _duckdb_allowed_cxx_std)
     message(FATAL_ERROR
-      "DuckDB requires C++17 or higher; got CMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}. "
-      "Pass -DCMAKE_CXX_STANDARD=17 (or higher), or unset it to use the default.")
+      "This fast32 fork requires C++20 or higher; got CMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}. "
+      "Pass -DCMAKE_CXX_STANDARD=20 (or higher), or unset it to use the default.")
   endif()
 endif()
 
-set(CMAKE_CXX_STANDARD 17 CACHE STRING "Default C++ standard (minimum 17)")                                                                                                             
+set(CMAKE_CXX_STANDARD 20 CACHE STRING "Default C++ standard (minimum 20)")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
