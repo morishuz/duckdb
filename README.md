@@ -1,5 +1,19 @@
 # DuckDB with experimental fast32 sorting
 
+**Up to 1.81× faster in the measured integer ORDER BY workload.** This fork
+accelerates eligible in-memory sorts; the results below use random INTEGER keys
+with row-id payloads on Apple M1, with a 2 GB DuckDB memory limit.
+
+| Rows | Threads | Unmodified DuckDB | Paged fast32 | Speedup |
+|---|---:|---:|---:|---:|
+| 2M | 1 | 103.20 ms | 62.63 ms | **1.65×** |
+| 2M | 4 | 40.39 ms | 35.10 ms | **1.15×** |
+| 8M | 1 | 447.90 ms | 247.17 ms | **1.81×** |
+| 8M | 4 | 170.62 ms | 128.06 ms | **1.33×** |
+
+These are full-query timings from the pinned-revision experiments that preceded
+packaging this fork. See the [benchmark details, memory costs, and regressions](experiments/fast32/README.md#historical-measurements).
+
 This independent fork enables our adaptive integer sorting kernel for eligible
 in-memory ORDER BY runs. It is based on DuckDB commit
 `bd77495e4b98772224948c57320bc1aa25ad9bfc`, the revision used in our experiments.
