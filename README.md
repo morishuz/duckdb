@@ -1,8 +1,11 @@
-# DuckDB with experimental fast32 sorting
+# DuckDB with faster integer sorting
 
-**Up to 1.81× faster in the measured integer ORDER BY workload.** This fork
-accelerates eligible in-memory sorts; the results below use random INTEGER keys
-with row-id payloads on Apple M1, with a 2 GB DuckDB memory limit.
+**Up to 1.81× faster in our tested integer-sorting query.** This experimental
+version of DuckDB uses fast32 to speed up some queries that put rows in order
+(`ORDER BY`). It chooses the sorter automatically; you do not need to rewrite SQL.
+
+The test sorted random whole numbers alongside a numeric row ID, on an Apple
+M1 with a 2 GB DuckDB memory limit. These are complete query times:
 
 | Rows | Threads | Unmodified DuckDB | Paged fast32 | Speedup |
 |---|---:|---:|---:|---:|
@@ -11,21 +14,42 @@ with row-id payloads on Apple M1, with a 2 GB DuckDB memory limit.
 | 8M | 1 | 447.90 ms | 247.17 ms | **1.81×** |
 | 8M | 4 | 170.62 ms | 128.06 ms | **1.33×** |
 
-These are full-query timings from the pinned-revision experiments that preceded
-packaging this fork. See the [benchmark details, memory costs, and regressions](experiments/fast32/README.md#historical-measurements).
+2M means two million rows. Threads are the number of workers DuckDB uses.
+A 1.81× speedup means the query took about 45% less time.
+These measurements were made before packaging this fork, using the same sorting
+implementation and base DuckDB revision. [Measurement details](experiments/fast32/README.md#historical-measurements).
 
-This independent fork enables our adaptive integer sorting kernel for eligible
-in-memory ORDER BY runs. It is based on DuckDB commit
-`bd77495e4b98772224948c57320bc1aa25ad9bfc`, the revision used in our experiments.
-It is **not an official DuckDB release**. Implementation and testing were developed
-with AI assistance; no upstream endorsement is implied.
+## Which queries can benefit?
 
-**[Build, run, compare, and understand the limitations](experiments/fast32/README.md)**
+A good candidate is sorting many rows by one integer column while returning
+fixed-size values, such as other integer columns. The sorting work must fit in
+memory, with room for an extra working buffer.
 
-The fast32 path is enabled by default. Set `FAST32_DUCKDB=0` before starting the
-process to use native sorting. This fork requires a C++20 compiler.
+**This does not speed up every `ORDER BY`.** Sorting text, returning text columns,
+using sorting values that exceed the size limit, or using disk for sorting falls outside the
+current optimization. Asking for just the first few rows (`ORDER BY … LIMIT`)
+can use a separate DuckDB algorithm that we have not changed. In these cases,
+DuckDB keeps using its existing algorithms.
 
----
+We have **not measured how often fast32 applies across representative real-world
+queries**. The table shows a gain for the tested workload, not a general speedup
+for all DuckDB queries. Some tested workloads were slower, and the fast32 path
+uses more memory. [Examples and exact requirements](experiments/fast32/README.md#when-it-helps).
+
+## Try it
+
+**[Build instructions, benchmarks, and tests](experiments/fast32/README.md#build-and-run)**
+
+Build this fork with a C++20 compiler to use the modified sorter. Installing the
+normal DuckDB package does not include it. Fast32 is enabled by default;
+`FAST32_DUCKDB=0` switches it off for comparison.
+
+This is an independent experimental fork, not an official DuckDB release. It is
+based on commit `bd77495e4b98772224948c57320bc1aa25ad9bfc`. The implementation and
+testing were developed with AI assistance; no upstream endorsement is implied.
+
+<details>
+<summary>Original DuckDB project documentation</summary>
 
 <div align="center">
   <picture>
@@ -78,3 +102,5 @@ Please also refer to our [Build Guide](https://duckdb.org/docs/current/dev/build
 ## Support
 
 See the [Support Options](https://ducklabs.com/support/) page and the dedicated [`endoflife.date`](https://endoflife.date/duckdb) page.
+
+</details>
